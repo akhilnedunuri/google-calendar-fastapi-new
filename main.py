@@ -1,96 +1,87 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from dotenv import load_dotenv
-
-# Load environment variables from .env
-load_dotenv()
-
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-CLIENT_SECRETS_FILE = os.getenv("GOOGLE_CLIENT_SECRETS")
-TOKEN_FILE = os.getenv("TOKEN_FILE")
-
-# Check that environment variables are set
-if not CLIENT_SECRETS_FILE or not TOKEN_FILE:
-    raise Exception(
-        "Environment variables GOOGLE_CLIENT_SECRETS or TOKEN_FILE not set."
-    )
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from google.auth.transport.requests import Request
 
 app = FastAPI(
-    title="Google Calendar API Service",
-    description="FastAPI service to create Google Calendar events",
+    title="Google Calendar API FastAPI",
+    description="Create calendar events directly from Swagger UI and send invites to attendees.",
     version="1.0.0"
 )
 
-# ✅ Event request body
+# --------------------------
+# Environment variables handling
+# --------------------------
+TOKEN_PATH = "token.json"
+CLIENT_SECRET_PATH = "client_secret.json"
+
+if not os.path.exists(TOKEN_PATH):
+    token_content = os.environ.get("TOKEN_FILE_CONTENT")
+    if token_content:
+        with open(TOKEN_PATH, "w") as f:
+            f.write(token_content)
+    else:
+        raise Exception("TOKEN_FILE_CONTENT environment variable not set.")
+
+if not os.path.exists(CLIENT_SECRET_PATH):
+    client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRETS")
+    if client_secret_content:
+        with open(CLIENT_SECRET_PATH, "w") as f:
+            f.write(client_secret_content)
+    else:
+        raise Exception("GOOGLE_CLIENT_SECRETS environment variable not set.")
+
+# --------------------------
+# Google Calendar setup
+# --------------------------
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+creds = None
+if os.path.exists(TOKEN_PATH):
+    creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+
+if not creds or not creds.valid:
+    if creds and creds.expired and creds.refresh_token:
+        creds.refresh(Request())
+    else:
+        flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
+        creds = flow.run_local_server(port=0)
+    with open(TOKEN_PATH, 'w') as token:
+        token.write(creds.to_json())
+
+service = build('calendar', 'v3', credentials=creds)
+
+# --------------------------
+# Models
+# --------------------------
 class Event(BaseModel):
     summary: str
-    location: str
-    description: str
-    start: str  # ISO 8601 format: "2025-10-25T19:00:00"
-    end: str
-    attendees: list[str]
+    description: str = None
+    start: dict
+    end: dict
+    attendees: list[dict] = []
 
-# Function to get Google Calendar service
-def get_calendar_service():
-    if not os.path.exists(TOKEN_FILE):
-        raise HTTPException(
-            status_code=500,
-            detail="Token file not found. Generate token.json locally first."
-        )
+# --------------------------
+# Routes
+# --------------------------
+@app.get("/", include_in_schema=False)
+async def swagger_redirect():
+    # Redirect root to Swagger UI
+    return RedirectResponse(url="/docs")
 
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-    service = build('calendar', 'v3', credentials=creds)
-    return service
-
-# 1️⃣ HTML Home Page
-@app.get("/", response_class=HTMLResponse)
-def home_page():
-    return """
-    <html>
-        <head>
-            <title>Google Calendar API</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; text-align: center; margin-top: 50px;">
-            <h1>🎉 Welcome to the Google Calendar FastAPI Service! 🎉</h1>
-            <p>Create and manage your calendar events easily.</p>
-            <p>Go to <a href='/docs'>Swagger UI</a> to test the API.</p>
-            <p>Go to <a href='/redoc'>ReDoc</a> for alternative API docs.</p>
-        </body>
-    </html>
-    """
-
-# 2️⃣ Create event endpoint
 @app.post("/create-event")
-def create_event(event: Event):
-    service = get_calendar_service()
-    
-    event_body = {
-        "summary": event.summary,
-        "location": event.location,
-        "description": event.description,
-        "start": {"dateTime": event.start, "timeZone": "Asia/Kolkata"},
-        "end": {"dateTime": event.end, "timeZone": "Asia/Kolkata"},
-        "attendees": [{"email": email} for email in event.attendees],
-        "reminders": {
-            "useDefault": False,
-            "overrides": [
-                {"method": "email", "minutes": 24 * 60},
-                {"method": "popup", "minutes": 30}
-            ]
-        }
-    }
-
-    created_event = service.events().insert(
-        calendarId='primary',
-        body=event_body,
-        sendUpdates='all'
-    ).execute()
-
-    return {
-        "message": "✅ Event created successfully!",
-        "event_link": created_event.get('htmlLink')
-    }
+async def create_event(event: Event):
+    try:
+        calendar_id = 'primary'
+        created_event = service.events().insert(
+            calendarId=calendar_id,
+            body=event.dict(),
+            sendUpdates='all'  # This sends email notifications to attendees
+        ).execute()
+        return {"status": "success", "event": created_event}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
