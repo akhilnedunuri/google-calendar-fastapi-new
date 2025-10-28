@@ -11,36 +11,48 @@ from google.auth.transport.requests import Request
 app = FastAPI(
     title="Google Calendar API FastAPI",
     description="Create calendar events directly from Swagger UI and send invites to attendees.",
-    version="1.0.0"
+    version="1.1.0"
 )
 
-# --------------------------
-# Environment variables handling
-# --------------------------
-TOKEN_PATH = "token.json"
-CLIENT_SECRET_PATH = "client_secret.json"
+# --------------------------------------------------
+# ✅ Environment variables & file setup (Render Safe)
+# --------------------------------------------------
 
+TOKEN_PATH = "token.json"
+CLIENT_SECRET_PATH = "client_secrets.json"
+
+# --- Handle token.json (Google credentials) ---
 if not os.path.exists(TOKEN_PATH):
     token_content = os.environ.get("TOKEN_FILE_CONTENT")
     if token_content:
-        with open(TOKEN_PATH, "w") as f:
-            f.write(token_content)
+        try:
+            with open(TOKEN_PATH, "w") as f:
+                f.write(token_content)
+            print("✅ token.json created from environment variable.")
+        except Exception as e:
+            raise Exception(f"Failed to write token.json: {e}")
     else:
         raise Exception("TOKEN_FILE_CONTENT environment variable not set.")
 
+# --- Handle client_secrets.json ---
 if not os.path.exists(CLIENT_SECRET_PATH):
-    client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRETS")
+    client_secret_content = os.environ.get("GOOGLE_CLIENT_SECRETS_CONTENT") or os.environ.get("GOOGLE_CLIENT_SECRETS")
     if client_secret_content:
-        with open(CLIENT_SECRET_PATH, "w") as f:
-            f.write(client_secret_content)
+        try:
+            with open(CLIENT_SECRET_PATH, "w") as f:
+                f.write(client_secret_content)
+            print("✅ client_secrets.json created from environment variable.")
+        except Exception as e:
+            raise Exception(f"Failed to write client_secrets.json: {e}")
     else:
-        raise Exception("GOOGLE_CLIENT_SECRETS environment variable not set.")
+        raise Exception("GOOGLE_CLIENT_SECRETS_CONTENT environment variable not set.")
 
-# --------------------------
-# Google Calendar setup
-# --------------------------
+# --------------------------------------------------
+# ✅ Google Calendar API Setup
+# --------------------------------------------------
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 creds = None
+
 if os.path.exists(TOKEN_PATH):
     creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
@@ -55,9 +67,9 @@ if not creds or not creds.valid:
 
 service = build('calendar', 'v3', credentials=creds)
 
-# --------------------------
-# Models
-# --------------------------
+# --------------------------------------------------
+# ✅ Pydantic Model
+# --------------------------------------------------
 class Event(BaseModel):
     summary: str
     description: str = None
@@ -65,23 +77,26 @@ class Event(BaseModel):
     end: dict
     attendees: list[dict] = []
 
-# --------------------------
-# Routes
-# --------------------------
+# --------------------------------------------------
+# ✅ Routes
+# --------------------------------------------------
 @app.get("/", include_in_schema=False)
-async def swagger_redirect():
-    # Redirect root to Swagger UI
+async def root_redirect():
+    """Redirect root to Swagger UI"""
     return RedirectResponse(url="/docs")
+
 
 @app.post("/create-event")
 async def create_event(event: Event):
+    """Create a new Google Calendar event and send invites"""
     try:
         calendar_id = 'primary'
         created_event = service.events().insert(
             calendarId=calendar_id,
             body=event.dict(),
-            sendUpdates='all'  # This sends email notifications to attendees
+            sendUpdates='all'
         ).execute()
         return {"status": "success", "event": created_event}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
