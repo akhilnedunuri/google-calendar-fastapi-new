@@ -7,11 +7,23 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
+from fastapi.middleware.cors import CORSMiddleware  # ✅ Added for teammates
 
 app = FastAPI(
     title="Google Calendar API FastAPI",
     description="Create calendar events directly from Swagger UI and send invites to attendees.",
-    version="1.1.0"
+    version="1.2.0"
+)
+
+# --------------------------------------------------
+# ✅ Enable CORS (so your teammates can connect)
+# --------------------------------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # You can later restrict this to specific domains if needed
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --------------------------------------------------
@@ -99,4 +111,3 @@ async def create_event(event: Event):
         return {"status": "success", "event": created_event}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
