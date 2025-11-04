@@ -15,7 +15,7 @@ from google.auth.transport.requests import Request
 app = FastAPI(
     title="Tour Booking Calendar API",
     description="Integrate tour booking confirmations with Google Calendar and send invite emails.",
-    version="2.2.0"
+    version="2.3.0"
 )
 
 # --------------------------------------------------
@@ -34,16 +34,15 @@ app.add_middleware(
 # --------------------------------------------------
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-# Local defaults
 LOCAL_TOKEN_PATH = "token.json"
 LOCAL_CLIENT_SECRET_PATH = "client_secrets.json"
 
-# On Render: prefer /etc/secrets
 CLIENT_SECRET_PATH = (
     "/etc/secrets/client_secrets.json"
     if os.path.exists("/etc/secrets/client_secrets.json")
     else LOCAL_CLIENT_SECRET_PATH
 )
+
 TOKEN_PATH = (
     "/etc/secrets/token.json"
     if os.path.exists("/etc/secrets/token.json")
@@ -56,35 +55,37 @@ print(f"✅ Using TOKEN_PATH: {TOKEN_PATH}")
 # --------------------------------------------------
 # ✅ Load Google Credentials
 # --------------------------------------------------
-creds = None
+def get_calendar_service():
+    creds = None
 
-if os.path.exists(TOKEN_PATH):
-    creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    # Load existing token
+    if os.path.exists(TOKEN_PATH):
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
-# If creds invalid or missing, refresh or recreate
-if not creds or not creds.valid:
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    else:
-        if not os.path.exists(CLIENT_SECRET_PATH):
-            raise Exception("client_secrets.json not found in project folder or /etc/secrets/")
-        flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
-        creds = flow.run_local_server(port=0)
+    # Refresh or create new credentials
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not os.path.exists(CLIENT_SECRET_PATH):
+                raise Exception("client_secrets.json not found in project folder or /etc/secrets/")
+            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
+            creds = flow.run_local_server(port=0)
 
-    # ✅ Render fix: write refreshed token to /tmp if /etc/secrets/ is read-only
-    writable_token_path = TOKEN_PATH
-    if TOKEN_PATH.startswith("/etc/secrets"):
-        writable_token_path = "/tmp/token.json"
+        # Write refreshed token to a writable location
+        writable_token_path = TOKEN_PATH
+        if TOKEN_PATH.startswith("/etc/secrets"):
+            writable_token_path = "/tmp/token.json"
 
-    try:
-        with open(writable_token_path, "w") as token_file:
-            token_file.write(creds.to_json())
-        print(f"✅ Token saved to: {writable_token_path}")
-    except OSError as e:
-        print(f"⚠️ Could not write token to {writable_token_path}: {e}")
+        try:
+            with open(writable_token_path, "w") as token_file:
+                token_file.write(creds.to_json())
+            print(f"✅ Token saved to: {writable_token_path}")
+        except OSError as e:
+            print(f"⚠️ Could not write token to {writable_token_path}: {e}")
 
-# Build Calendar service
-service = build("calendar", "v3", credentials=creds)
+    # Build service each time (ensures fresh token)
+    return build("calendar", "v3", credentials=creds)
 
 # --------------------------------------------------
 # ✅ Models
@@ -128,6 +129,7 @@ async def root_redirect():
 async def create_booking_event(booking: BookingPayload):
     """Create a Google Calendar event for tour bookings"""
     try:
+        service = get_calendar_service()  # always fresh service
         calendar_id = "primary"
 
         summary = f"{booking.calendarEvent.title} - {booking.tourType}"
@@ -171,18 +173,28 @@ async def create_booking_event(booking: BookingPayload):
                 {"email": booking.customerEmail},
                 {"email": "akhilnedunuri7@gmail.com"},  # your copy
             ],
+            "reminders": {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "email", "minutes": 60},
+                    {"method": "popup", "minutes": 10},
+                ],
+            },
         }
 
+        # ✅ Ensures the email invite is sent
         created_event = service.events().insert(
-            calendarId=calendar_id, body=event_body, sendUpdates="all"
+            calendarId=calendar_id,
+            body=event_body,
+            sendUpdates="all"
         ).execute()
 
         return {
             "status": "success",
-            "message": "Booking event created successfully and invite sent!",
+            "message": f"Booking event created successfully for {booking.customerFirstName}! Invite email sent.",
             "eventLink": created_event.get("htmlLink"),
             "eventId": created_event.get("id"),
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Error creating calendar event: {str(e)}")
