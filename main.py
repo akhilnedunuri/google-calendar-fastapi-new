@@ -15,11 +15,11 @@ from google.auth.transport.requests import Request
 app = FastAPI(
     title="Tour Booking Calendar API",
     description="Integrate tour booking confirmations with Google Calendar and send invite emails.",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 # --------------------------------------------------
-# ✅ Enable CORS (for your frontend or teammate)
+# ✅ Enable CORS (for your frontend or teammates)
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -32,29 +32,45 @@ app.add_middleware(
 # --------------------------------------------------
 # ✅ Google Calendar Setup
 # --------------------------------------------------
-SCOPES = ['https://www.googleapis.com/auth/calendar']
-TOKEN_PATH = "token.json"
-CLIENT_SECRET_PATH = "client_secrets.json"
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+LOCAL_TOKEN_PATH = "token.json"
+LOCAL_CLIENT_SECRET_PATH = "client_secrets.json"
+
+# ✅ Check for Render secret file paths first
+CLIENT_SECRET_PATH = (
+    "/etc/secrets/client_secrets.json"
+    if os.path.exists("/etc/secrets/client_secrets.json")
+    else LOCAL_CLIENT_SECRET_PATH
+)
+TOKEN_PATH = (
+    "/etc/secrets/token.json"
+    if os.path.exists("/etc/secrets/token.json")
+    else LOCAL_TOKEN_PATH
+)
+
+print(f"✅ Using CLIENT_SECRET_PATH: {CLIENT_SECRET_PATH}")
+print(f"✅ Using TOKEN_PATH: {TOKEN_PATH}")
+
 creds = None
 
 # --- Load credentials directly from files ---
 if os.path.exists(TOKEN_PATH):
     creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
-# --- Refresh or create credentials ---
+# --- Refresh or create credentials if needed ---
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     else:
         if not os.path.exists(CLIENT_SECRET_PATH):
-            raise Exception("client_secrets.json not found in the project folder.")
+            raise Exception("client_secrets.json not found in the project folder or /etc/secrets/")
         flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
         creds = flow.run_local_server(port=0)
-    with open(TOKEN_PATH, 'w') as token:
+    with open(TOKEN_PATH, "w") as token:
         token.write(creds.to_json())
 
 # --- Build Google Calendar service ---
-service = build('calendar', 'v3', credentials=creds)
+service = build("calendar", "v3", credentials=creds)
 
 # --------------------------------------------------
 # ✅ Models
@@ -64,6 +80,7 @@ class CalendarEvent(BaseModel):
     description: Optional[str] = None
     startDateTime: str
     endDateTime: str
+
 
 class BookingPayload(BaseModel):
     customerEmail: str
@@ -84,6 +101,7 @@ class BookingPayload(BaseModel):
     fulfillmentStatus: str
     orderTimestamp: str
 
+
 # --------------------------------------------------
 # ✅ Routes
 # --------------------------------------------------
@@ -92,11 +110,12 @@ async def root_redirect():
     """Redirect root to Swagger UI"""
     return RedirectResponse(url="/docs")
 
+
 @app.post("/create-booking-event")
 async def create_booking_event(booking: BookingPayload):
     """Create a Google Calendar event for tour bookings"""
     try:
-        calendar_id = 'primary'
+        calendar_id = "primary"
 
         summary = f"{booking.calendarEvent.title} - {booking.tourType}"
         description = f"""
@@ -129,29 +148,27 @@ async def create_booking_event(booking: BookingPayload):
             "description": description,
             "start": {
                 "dateTime": booking.calendarEvent.startDateTime,
-                "timeZone": "Asia/Kolkata"
+                "timeZone": "Asia/Kolkata",
             },
             "end": {
                 "dateTime": booking.calendarEvent.endDateTime,
-                "timeZone": "Asia/Kolkata"
+                "timeZone": "Asia/Kolkata",
             },
             "attendees": [
                 {"email": booking.customerEmail},
-                {"email": "akhilnedunuri7@gmail.com"}  # Your email (sender copy)
+                {"email": "akhilnedunuri7@gmail.com"},  # Your email copy
             ],
         }
 
         created_event = service.events().insert(
-            calendarId=calendar_id,
-            body=event_body,
-            sendUpdates='all'
+            calendarId=calendar_id, body=event_body, sendUpdates="all"
         ).execute()
 
         return {
             "status": "success",
             "message": "Booking event created successfully and invite sent!",
             "eventLink": created_event.get("htmlLink"),
-            "eventId": created_event.get("id")
+            "eventId": created_event.get("id"),
         }
 
     except Exception as e:
