@@ -1,0 +1,15 @@
+{
+  "summary": "Graduation Event",
+  "description": "Celebrating the completion of graduation ceremony.",
+  "start": {
+    "dateTime": "2025-10-28T10:00:00+05:30"
+  },
+  "end": {
+    "dateTime": "2025-10-28T12:00:00+05:30"
+  },
+  "attendees": [
+    {
+      "email": "akhil12109450@gmail.com"
+    }
+  ]
+}
