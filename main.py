@@ -15,15 +15,15 @@ from google.auth.transport.requests import Request
 app = FastAPI(
     title="Tour Booking Calendar API",
     description="Integrate tour booking confirmations with Google Calendar and send invite emails.",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # --------------------------------------------------
-# ✅ Enable CORS (for your frontend or teammates)
+# ✅ Enable CORS
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace "*" with frontend domain when deploying
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,10 +33,12 @@ app.add_middleware(
 # ✅ Google Calendar Setup
 # --------------------------------------------------
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+
+# Local defaults
 LOCAL_TOKEN_PATH = "token.json"
 LOCAL_CLIENT_SECRET_PATH = "client_secrets.json"
 
-# ✅ Check for Render secret file paths first
+# On Render: prefer /etc/secrets
 CLIENT_SECRET_PATH = (
     "/etc/secrets/client_secrets.json"
     if os.path.exists("/etc/secrets/client_secrets.json")
@@ -51,25 +53,37 @@ TOKEN_PATH = (
 print(f"✅ Using CLIENT_SECRET_PATH: {CLIENT_SECRET_PATH}")
 print(f"✅ Using TOKEN_PATH: {TOKEN_PATH}")
 
+# --------------------------------------------------
+# ✅ Load Google Credentials
+# --------------------------------------------------
 creds = None
 
-# --- Load credentials directly from files ---
 if os.path.exists(TOKEN_PATH):
     creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
-# --- Refresh or create credentials if needed ---
+# If creds invalid or missing, refresh or recreate
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())
     else:
         if not os.path.exists(CLIENT_SECRET_PATH):
-            raise Exception("client_secrets.json not found in the project folder or /etc/secrets/")
+            raise Exception("client_secrets.json not found in project folder or /etc/secrets/")
         flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
         creds = flow.run_local_server(port=0)
-    with open(TOKEN_PATH, "w") as token:
-        token.write(creds.to_json())
 
-# --- Build Google Calendar service ---
+    # ✅ Render fix: write refreshed token to /tmp if /etc/secrets/ is read-only
+    writable_token_path = TOKEN_PATH
+    if TOKEN_PATH.startswith("/etc/secrets"):
+        writable_token_path = "/tmp/token.json"
+
+    try:
+        with open(writable_token_path, "w") as token_file:
+            token_file.write(creds.to_json())
+        print(f"✅ Token saved to: {writable_token_path}")
+    except OSError as e:
+        print(f"⚠️ Could not write token to {writable_token_path}: {e}")
+
+# Build Calendar service
 service = build("calendar", "v3", credentials=creds)
 
 # --------------------------------------------------
@@ -101,7 +115,6 @@ class BookingPayload(BaseModel):
     fulfillmentStatus: str
     orderTimestamp: str
 
-
 # --------------------------------------------------
 # ✅ Routes
 # --------------------------------------------------
@@ -123,7 +136,7 @@ async def create_booking_event(booking: BookingPayload):
 
         👤 Customer: {booking.customerFirstName} {booking.customerLastName}
         📧 Email: {booking.customerEmail}
-        📞 Phone: {booking.customerPhone}
+        📞 Phone: {booking.customerPhone or 'N/A'}
 
         🏝️ Tour Type: {booking.tourType}
         👥 Participants: {booking.numberOfParticipants}
@@ -156,7 +169,7 @@ async def create_booking_event(booking: BookingPayload):
             },
             "attendees": [
                 {"email": booking.customerEmail},
-                {"email": "akhilnedunuri7@gmail.com"},  # Your email copy
+                {"email": "akhilnedunuri7@gmail.com"},  # your copy
             ],
         }
 
