@@ -3,23 +3,23 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 
 # --------------------------------------------------
-# ✅ App Configuration
+# App Configuration
 # --------------------------------------------------
 app = FastAPI(
     title="Tour Booking Calendar API",
-    description="Integrate tour booking confirmations with Google Calendar and send invite emails.",
-    version="2.3.0"
+    description="Single + Bulk tour booking confirmations with Google Calendar invites.",
+    version="3.0.0"
 )
 
 # --------------------------------------------------
-# ✅ Enable CORS
+# Enable CORS
 # --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -30,7 +30,7 @@ app.add_middleware(
 )
 
 # --------------------------------------------------
-# ✅ Google Calendar Setup
+# Google Calendar Setup
 # --------------------------------------------------
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
@@ -49,46 +49,43 @@ TOKEN_PATH = (
     else LOCAL_TOKEN_PATH
 )
 
-print(f"✅ Using CLIENT_SECRET_PATH: {CLIENT_SECRET_PATH}")
-print(f"✅ Using TOKEN_PATH: {TOKEN_PATH}")
+print("Using CLIENT_SECRET_PATH:", CLIENT_SECRET_PATH)
+print("Using TOKEN_PATH:", TOKEN_PATH)
 
 # --------------------------------------------------
-# ✅ Load Google Credentials
+# Google Auth
 # --------------------------------------------------
 def get_calendar_service():
     creds = None
 
-    # Load existing token
     if os.path.exists(TOKEN_PATH):
         creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
 
-    # Refresh or create new credentials
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
             if not os.path.exists(CLIENT_SECRET_PATH):
-                raise Exception("client_secrets.json not found in project folder or /etc/secrets/")
-            flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRET_PATH, SCOPES)
+                raise Exception(
+                    "client_secrets.json not found in project folder or /etc/secrets/"
+                )
+
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRET_PATH, SCOPES
+            )
             creds = flow.run_local_server(port=0)
 
-        # Write refreshed token to a writable location
         writable_token_path = TOKEN_PATH
         if TOKEN_PATH.startswith("/etc/secrets"):
             writable_token_path = "/tmp/token.json"
 
-        try:
-            with open(writable_token_path, "w") as token_file:
-                token_file.write(creds.to_json())
-            print(f"✅ Token saved to: {writable_token_path}")
-        except OSError as e:
-            print(f"⚠️ Could not write token to {writable_token_path}: {e}")
+        with open(writable_token_path, "w") as token_file:
+            token_file.write(creds.to_json())
 
-    # Build service each time (ensures fresh token)
     return build("calendar", "v3", credentials=creds)
 
 # --------------------------------------------------
-# ✅ Models
+# Models
 # --------------------------------------------------
 class CalendarEvent(BaseModel):
     title: str
@@ -116,85 +113,131 @@ class BookingPayload(BaseModel):
     fulfillmentStatus: str
     orderTimestamp: str
 
+
+class BulkBookingPayload(BaseModel):
+    bookings: List[BookingPayload]
+
 # --------------------------------------------------
-# ✅ Routes
+# Root
 # --------------------------------------------------
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    """Redirect root to Swagger UI"""
     return RedirectResponse(url="/docs")
 
+# --------------------------------------------------
+# Helper Function
+# --------------------------------------------------
+def create_event(service, booking):
+    summary = f"{booking.calendarEvent.title} - {booking.tourType}"
 
+    description = f"""
+Booking Confirmation
+
+Customer: {booking.customerFirstName} {booking.customerLastName}
+Email: {booking.customerEmail}
+Phone: {booking.customerPhone or 'N/A'}
+
+Tour Type: {booking.tourType}
+Participants: {booking.numberOfParticipants}
+Adult: {'Yes' if booking.isParticipantAdult else 'No'}
+
+Booking Date: {booking.bookingDate}
+Time: {booking.bookingTime}
+
+Payment Method: {booking.paymentMethod}
+Payment Status: {booking.paymentStatus}
+Price: ₹{booking.tourPrice}
+
+Fulfillment Status: {booking.fulfillmentStatus}
+Order Timestamp: {booking.orderTimestamp}
+
+Terms Accepted: {'Yes' if booking.hasAcceptedTerms else 'No'}
+Signature: {booking.digitalSignature or 'N/A'}
+    """.strip()
+
+    event_body = {
+        "summary": summary,
+        "description": description,
+        "start": {
+            "dateTime": booking.calendarEvent.startDateTime,
+            "timeZone": "Asia/Kolkata",
+        },
+        "end": {
+            "dateTime": booking.calendarEvent.endDateTime,
+            "timeZone": "Asia/Kolkata",
+        },
+        "attendees": [
+            {"email": booking.customerEmail},
+            {"email": "akhilnedunuri7@gmail.com"}
+        ],
+        "reminders": {
+            "useDefault": False,
+            "overrides": [
+                {"method": "email", "minutes": 60},
+                {"method": "popup", "minutes": 10},
+            ],
+        },
+    }
+
+    created_event = service.events().insert(
+        calendarId="primary",
+        body=event_body,
+        sendUpdates="all"
+    ).execute()
+
+    return created_event
+
+# --------------------------------------------------
+# Single Booking API
+# --------------------------------------------------
 @app.post("/create-booking-event")
 async def create_booking_event(booking: BookingPayload):
-    """Create a Google Calendar event for tour bookings"""
     try:
-        service = get_calendar_service()  # always fresh service
-        calendar_id = "primary"
+        service = get_calendar_service()
 
-        summary = f"{booking.calendarEvent.title} - {booking.tourType}"
-        description = f"""
-        Booking Confirmation:
-
-        👤 Customer: {booking.customerFirstName} {booking.customerLastName}
-        📧 Email: {booking.customerEmail}
-        📞 Phone: {booking.customerPhone or 'N/A'}
-
-        🏝️ Tour Type: {booking.tourType}
-        👥 Participants: {booking.numberOfParticipants}
-        🧑‍🧑 Adults: {"Yes" if booking.isParticipantAdult else "No"}
-
-        📅 Booking Date: {booking.bookingDate}
-        🕒 Time: {booking.bookingTime}
-
-        💳 Payment Method: {booking.paymentMethod}
-        💰 Payment Status: {booking.paymentStatus}
-        💵 Price: ${booking.tourPrice}
-
-        🚚 Fulfillment Status: {booking.fulfillmentStatus}
-        🕓 Order Timestamp: {booking.orderTimestamp}
-
-        ✅ Terms Accepted: {"Yes" if booking.hasAcceptedTerms else "No"}
-        ✍️ Signature: {booking.digitalSignature or 'N/A'}
-        """.strip()
-
-        event_body = {
-            "summary": summary,
-            "description": description,
-            "start": {
-                "dateTime": booking.calendarEvent.startDateTime,
-                "timeZone": "Asia/Kolkata",
-            },
-            "end": {
-                "dateTime": booking.calendarEvent.endDateTime,
-                "timeZone": "Asia/Kolkata",
-            },
-            "attendees": [
-                {"email": booking.customerEmail},
-                {"email": "akhilnedunuri7@gmail.com"},  # your copy
-            ],
-            "reminders": {
-                "useDefault": False,
-                "overrides": [
-                    {"method": "email", "minutes": 60},
-                    {"method": "popup", "minutes": 10},
-                ],
-            },
-        }
-
-        # ✅ Ensures the email invite is sent
-        created_event = service.events().insert(
-            calendarId=calendar_id,
-            body=event_body,
-            sendUpdates="all"
-        ).execute()
+        created_event = create_event(service, booking)
 
         return {
             "status": "success",
-            "message": f"Booking event created successfully for {booking.customerFirstName}! Invite email sent.",
-            "eventLink": created_event.get("htmlLink"),
+            "message": f"Booking created for {booking.customerFirstName}",
             "eventId": created_event.get("id"),
+            "eventLink": created_event.get("htmlLink")
         }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating calendar event: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating booking event: {str(e)}"
+        )
+
+# --------------------------------------------------
+# Bulk Booking API
+# --------------------------------------------------
+@app.post("/bulk-create-bookings")
+async def bulk_create_bookings(data: BulkBookingPayload):
+    try:
+        service = get_calendar_service()
+
+        results = []
+
+        for booking in data.bookings:
+            created_event = create_event(service, booking)
+
+            results.append({
+                "customer": booking.customerFirstName,
+                "email": booking.customerEmail,
+                "eventId": created_event.get("id"),
+                "eventLink": created_event.get("htmlLink")
+            })
+
+        return {
+            "status": "success",
+            "message": f"{len(results)} bookings created successfully.",
+            "results": results
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating bulk bookings: {str(e)}"
+        )
