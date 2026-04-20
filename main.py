@@ -1,4 +1,5 @@
 import os
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -15,7 +16,7 @@ from google.auth.transport.requests import Request
 app = FastAPI(
     title="Tour Booking Calendar API",
     description="Single + Bulk tour booking confirmations with Google Calendar invites.",
-    version="3.0.0"
+    version="4.0.0"
 )
 
 # --------------------------------------------------
@@ -66,21 +67,15 @@ def get_calendar_service():
             creds.refresh(Request())
         else:
             if not os.path.exists(CLIENT_SECRET_PATH):
-                raise Exception(
-                    "client_secrets.json not found in project folder or /etc/secrets/"
-                )
+                raise Exception("client_secrets.json not found")
 
             flow = InstalledAppFlow.from_client_secrets_file(
                 CLIENT_SECRET_PATH, SCOPES
             )
             creds = flow.run_local_server(port=0)
 
-        writable_token_path = TOKEN_PATH
-        if TOKEN_PATH.startswith("/etc/secrets"):
-            writable_token_path = "/tmp/token.json"
-
-        with open(writable_token_path, "w") as token_file:
-            token_file.write(creds.to_json())
+        with open("/tmp/token.json", "w") as token:
+            token.write(creds.to_json())
 
     return build("calendar", "v3", credentials=creds)
 
@@ -158,31 +153,37 @@ Signature: {booking.digitalSignature or 'N/A'}
     event_body = {
         "summary": summary,
         "description": description,
+
         "start": {
             "dateTime": booking.calendarEvent.startDateTime,
-            "timeZone": "Asia/Kolkata",
+            "timeZone": "Asia/Kolkata"
         },
+
         "end": {
             "dateTime": booking.calendarEvent.endDateTime,
-            "timeZone": "Asia/Kolkata",
+            "timeZone": "Asia/Kolkata"
         },
+
         "attendees": [
-            {"email": booking.customerEmail},
-            {"email": "akhilnedunuri7@gmail.com"}
+            {"email": booking.customerEmail}
         ],
+
+        "status": "confirmed",
+
+        "guestsCanModify": False,
+        "guestsCanInviteOthers": False,
+        "guestsCanSeeOtherGuests": False,
+
         "reminders": {
-            "useDefault": False,
-            "overrides": [
-                {"method": "email", "minutes": 60},
-                {"method": "popup", "minutes": 10},
-            ],
-        },
+            "useDefault": True
+        }
     }
 
     created_event = service.events().insert(
         calendarId="primary",
         body=event_body,
-        sendUpdates="all"
+        sendUpdates="all",
+        conferenceDataVersion=0
     ).execute()
 
     return created_event
@@ -205,10 +206,7 @@ async def create_booking_event(booking: BookingPayload):
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creating booking event: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --------------------------------------------------
 # Bulk Booking API
@@ -217,7 +215,6 @@ async def create_booking_event(booking: BookingPayload):
 async def bulk_create_bookings(data: BulkBookingPayload):
     try:
         service = get_calendar_service()
-
         results = []
 
         for booking in data.bookings:
@@ -230,6 +227,8 @@ async def bulk_create_bookings(data: BulkBookingPayload):
                 "eventLink": created_event.get("htmlLink")
             })
 
+            time.sleep(2)   # delay for better email delivery
+
         return {
             "status": "success",
             "message": f"{len(results)} bookings created successfully.",
@@ -237,7 +236,4 @@ async def bulk_create_bookings(data: BulkBookingPayload):
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creating bulk bookings: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=str(e))
