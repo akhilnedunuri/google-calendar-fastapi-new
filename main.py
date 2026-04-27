@@ -3,7 +3,7 @@ import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import Optional, List
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -107,6 +107,9 @@ class BookingPayload(BaseModel):
     calendarEvent: CalendarEvent
     fulfillmentStatus: str
     orderTimestamp: str
+    terms_and_conditions:HttpUrl
+    cancellation_policy:HttpUrl
+    waiver_form:HttpUrl
 
 
 class BulkBookingPayload(BaseModel):
@@ -147,6 +150,11 @@ Fulfillment Status: {booking.fulfillmentStatus}
 Order Timestamp: {booking.orderTimestamp}
 
 Terms Accepted: {'Yes' if booking.hasAcceptedTerms else 'No'}
+
+Terms and conditions: {booking.terms_and_conditions}
+cancellation policy: {booking.cancellation_policy}
+waiver form: {booking.waiver_form}
+
 Signature: {booking.digitalSignature or 'N/A'}
     """.strip()
 
