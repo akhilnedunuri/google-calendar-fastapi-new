@@ -64,21 +64,30 @@ def get_calendar_service():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
+
+        if not creds:
             if not os.path.exists(CLIENT_SECRET_PATH):
                 raise Exception("client_secrets.json not found")
 
             flow = InstalledAppFlow.from_client_secrets_file(
                 CLIENT_SECRET_PATH, SCOPES
             )
-            creds = flow.run_local_server(port=0)
-
-        with open("/tmp/token.json", "w") as token:
-            token.write(creds.to_json())
+            creds = flow.run_local_server(
+                port=0,
+                access_type='offline',
+                prompt='consent'
+            )
+        try:
+            with open(TOKEN_PATH, "w") as token:
+                token.write(creds.to_json())
+        except OSError as e:
+            logging.warning(f'could not write token file, {e}')
 
     return build("calendar", "v3", credentials=creds)
-
 # --------------------------------------------------
 # Models
 # --------------------------------------------------
